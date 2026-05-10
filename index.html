@@ -1,0 +1,812 @@
+import { useState, useMemo, useRef } from 'react';
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  PieChart, Pie, Cell, Legend
+} from 'recharts';
+import {
+  Search, Plus, X, FileText, Download, ClipboardCheck, Hammer,
+  TrendingUp, Clock, Trophy, FileBarChart, Filter, ArrowUpRight,
+  Building2, Calendar, DollarSign, Target, Layers, ChevronRight,
+  GitCompare, BarChart2, Zap
+} from 'lucide-react';
+
+/* ─────────────────────────────────────────────
+   PIPELINE DATA
+───────────────────────────────────────────── */
+const INITIAL_PROJECTS = [
+  { id:'DT-10852', name:'Dollar Tree #10852 — Laredo, TX',     trade:'Electrical',      value:184500,  due:'2026-05-22', status:'Submitted',  csi:'26 - Electrical' },
+  { id:'DT-11454', name:'Dollar Tree #11454 — Austin, TX',     trade:'Multi-Trade',     value:1240000, due:'2026-05-15', status:'Won',         csi:'Multi' },
+  { id:'DT-09921', name:'Dollar Tree #09921 — San Antonio',    trade:'HVAC',            value:96200,   due:'2026-05-30', status:'Estimating',  csi:'23 - HVAC' },
+  { id:'TI-44210', name:'Retail TI — North Park Center',       trade:'Plumbing',        value:142800,  due:'2026-06-04', status:'Submitted',   csi:'22 - Plumbing' },
+  { id:'TI-44315', name:'Retail TI — Cedar Park Plaza',        trade:'Framing/Drywall', value:218500,  due:'2026-05-12', status:'Won',         csi:'09 - Finishes' },
+  { id:'CS-22018', name:'Cold Shell — Buda Logistics Park',    trade:'Structural',      value:487300,  due:'2026-06-18', status:'Estimating',  csi:'03 - Concrete' },
+  { id:'TI-44402', name:'Retail TI — Round Rock Crossing',     trade:'ACT Ceiling',     value:38400,   due:'2026-04-28', status:'Lost',        csi:'09 - Finishes' },
+  { id:'TI-44518', name:'Retail TI — South Lamar',             trade:'Painting',        value:52900,   due:'2026-05-25', status:'Submitted',   csi:'09 - Finishes' },
+  { id:'TI-44621', name:'Retail TI — Mockingbird Station',     trade:'Storefront',      value:174200,  due:'2026-06-10', status:'Estimating',  csi:'08 - Openings' },
+  { id:'DT-10477', name:'Dollar Tree #10477 — McAllen, TX',    trade:'Demo',            value:28600,   due:'2026-04-30', status:'Won',         csi:'02 - Existing Conditions' },
+  { id:'TI-44730', name:'Retail TI — Allen Premium Outlets',   trade:'FRP/Millwork',    value:91300,   due:'2026-06-22', status:'Estimating',  csi:'06 - Wood/Plastics' },
+  { id:'CS-22104', name:'Core & Shell — Pflugerville Tech',    trade:'Electrical',      value:612400,  due:'2026-07-08', status:'Submitted',   csi:'26 - Electrical' },
+];
+const AVG_TURNAROUND_DAYS = 6.4;
+
+const STATUS_STYLES = {
+  Estimating:{ dot:'bg-amber-500',  text:'text-amber-700',   bg:'bg-amber-50',   ring:'ring-amber-200' },
+  Submitted: { dot:'bg-sky-500',    text:'text-sky-700',     bg:'bg-sky-50',     ring:'ring-sky-200' },
+  Won:       { dot:'bg-emerald-500',text:'text-emerald-700', bg:'bg-emerald-50', ring:'ring-emerald-200' },
+  Lost:      { dot:'bg-rose-500',   text:'text-rose-700',    bg:'bg-rose-50',    ring:'ring-rose-200' },
+};
+const PIE_COLORS=['#0f172a','#475569','#0891b2','#65a30d','#ca8a04','#c2410c','#9f1239','#7c3aed'];
+
+/* ─────────────────────────────────────────────
+   HELPERS
+───────────────────────────────────────────── */
+const fmtCurrency = n => new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:0}).format(n);
+const fmtCompact  = n => new Intl.NumberFormat('en-US',{notation:'compact',maximumFractionDigits:1}).format(n);
+const fmtDate     = s => new Date(s).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+const daysUntil   = s => Math.round((new Date(s)-new Date())/(1000*60*60*24));
+const num         = s => parseFloat(String(s).replace(/[^0-9.\-]/g,''))||0;
+const fmtUSD      = v => (v==null||v==='') ? '—' : fmtCurrency(Number(v));
+const pct         = (a,b) => b ? (((a-b)/b)*100).toFixed(1)+'%' : '—';
+
+/* ─────────────────────────────────────────────
+   BID OS SHARED COMPONENTS
+───────────────────────────────────────────── */
+function BidBadge({children,color='gray'}){
+  const map={
+    gray:['bg-stone-100 text-stone-600'],
+    green:['bg-emerald-50 text-emerald-700'],
+    red:['bg-rose-50 text-rose-700'],
+    amber:['bg-amber-50 text-amber-700'],
+    blue:['bg-sky-50 text-sky-700'],
+  };
+  return <span className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-medium ${(map[color]||map.gray)[0]}`}>{children}</span>;
+}
+
+function BidPill({label,value,sub,color}){
+  const border={green:'border-l-2 border-emerald-500',red:'border-l-2 border-rose-500',amber:'border-l-2 border-amber-500',blue:'border-l-2 border-sky-500'};
+  return(
+    <div className={`bg-stone-50 rounded p-3 flex-1 min-w-28 ${border[color]||''}`}>
+      <div className="text-[11px] text-stone-500 mb-1">{label}</div>
+      <div className="text-lg font-semibold text-slate-900 tracking-tight">{value}</div>
+      {sub&&<div className="text-[11px] text-stone-400 mt-0.5">{sub}</div>}
+    </div>
+  );
+}
+
+function BidBtn({children,onClick,primary,small,disabled}){
+  return(
+    <button onClick={onClick} disabled={disabled}
+      className={`${small?'px-2.5 py-1 text-xs':'px-3.5 py-2 text-sm'} font-medium rounded transition-colors disabled:opacity-40 ${primary?'bg-slate-900 text-white hover:bg-slate-800':'border border-stone-300 text-slate-700 hover:bg-stone-50'}`}>
+      {children}
+    </button>
+  );
+}
+
+function parseCSV(text){
+  const lines=text.trim().split(/\r?\n/);
+  const headers=lines[0].split(/,|\t/).map(h=>h.trim());
+  return lines.slice(1).filter(l=>l.trim()).map(l=>{
+    const vals=l.split(/,|\t/).map(v=>v.trim().replace(/^"|"$/g,''));
+    const obj={};headers.forEach((h,i)=>obj[h]=vals[i]||'');return obj;
+  });
+}
+
+/* ─────────────────────────────────────────────
+   BID COMPARISON TAB
+───────────────────────────────────────────── */
+const DEMO_BIDS=[
+  {id:1,vendor:'Jones Engineering',trade:'Electrical',items:[
+    {desc:'Service & Panel Upgrade',amount:42000,notes:'200A, per spec'},
+    {desc:'Branch Circuits',amount:28500,notes:''},
+    {desc:'Lighting & Fixtures',amount:31200,notes:'LED only'},
+    {desc:'Low Voltage / Data',amount:12800,notes:'CAT6'},
+  ],inclusions:'Demo, permits, as-builts',exclusions:'Generator hook-up'},
+  {id:2,vendor:'QFS Electric',trade:'Electrical',items:[
+    {desc:'Service & Panel Upgrade',amount:39500,notes:'200A'},
+    {desc:'Branch Circuits',amount:31000,notes:'Includes spare circuits'},
+    {desc:'Lighting & Fixtures',amount:29800,notes:''},
+    {desc:'Low Voltage / Data',amount:14200,notes:'CAT6 + patch panels'},
+  ],inclusions:'Demo, permits',exclusions:'Generator hook-up, as-builts'},
+];
+
+function BidComparisonTab(){
+  const [bids,setBids]=useState(DEMO_BIDS);
+  const [scope,setScope]=useState('Dollar Tree #10852 — Laredo, TX');
+  const [trade,setTrade]=useState('Electrical');
+  const [showAdd,setShowAdd]=useState(false);
+  const [newVendor,setNewVendor]=useState('');
+  const [newItems,setNewItems]=useState([{desc:'',amount:'',notes:''}]);
+  const [newInc,setNewInc]=useState('');
+  const [newExc,setNewExc]=useState('');
+  const fileRef=useRef();
+  const [aiLoading,setAiLoading]=useState(false);
+  const [aiRec,setAiRec]=useState(null);
+
+  const allDescs=[...new Set(bids.flatMap(b=>b.items.map(i=>i.desc)))];
+  const totals=bids.map(b=>b.items.reduce((s,i)=>s+num(i.amount),0));
+  const minTotal=Math.min(...totals);
+
+  const handleFile=e=>{
+    const f=e.target.files[0];if(!f)return;
+    const reader=new FileReader();
+    reader.onload=ev=>{
+      try{
+        const rows=parseCSV(ev.target.result);
+        const vendors=[...new Set(rows.map(r=>r.Vendor||r.vendor||'Unknown'))];
+        const parsed=vendors.map((v,idx)=>{
+          const vRows=rows.filter(r=>(r.Vendor||r.vendor)===v);
+          return{id:Date.now()+idx,vendor:v,trade,items:vRows.map(r=>({desc:r.Description||r.description||r.Item||'',amount:num(r.Amount||r.amount||0),notes:r.Notes||r.notes||''})),inclusions:vRows[0]?.Inclusions||vRows[0]?.inclusions||'',exclusions:vRows[0]?.Exclusions||vRows[0]?.exclusions||''};
+        });
+        setBids(prev=>[...prev,...parsed]);
+      }catch(_){alert('Could not parse. Columns: Vendor, Description, Amount, Notes, Inclusions, Exclusions');}
+    };
+    reader.readAsText(f);e.target.value='';
+  };
+
+  const addBid=()=>{
+    if(!newVendor.trim())return;
+    setBids(prev=>[...prev,{id:Date.now(),vendor:newVendor,trade,items:newItems.map(i=>({...i,amount:num(i.amount)})),inclusions:newInc,exclusions:newExc}]);
+    setShowAdd(false);setNewVendor('');setNewItems([{desc:'',amount:'',notes:''}]);setNewInc('');setNewExc('');
+  };
+
+  const runAI=async()=>{
+    setAiLoading(true);setAiRec(null);
+    const prompt=`You are a commercial construction estimator. Analyze these subcontractor bids for ${scope} (${trade}) and give a concise award recommendation. Respond ONLY as JSON (no markdown): {"recommended":"vendor name","reason":"2-3 sentences","scopeGaps":["gap1","gap2"],"warnings":["w1"]}. Bids:\n${JSON.stringify(bids.map(b=>({vendor:b.vendor,total:b.items.reduce((s,i)=>s+num(i.amount),0),inclusions:b.inclusions,exclusions:b.exclusions})))}`;
+    try{
+      const res=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1000,messages:[{role:'user',content:prompt}]})});
+      const data=await res.json();
+      const txt=data.content?.find(c=>c.type==='text')?.text||'{}';
+      setAiRec(JSON.parse(txt.replace(/```json|```/g,'').trim()));
+    }catch(_){setAiRec({recommended:'Error',reason:'Could not parse response.',scopeGaps:[],warnings:[]});}
+    setAiLoading(false);
+  };
+
+  return(
+    <div className="space-y-5">
+      <div className="flex gap-2 items-center flex-wrap">
+        <input value={scope} onChange={e=>setScope(e.target.value)} placeholder="Project / scope name" className="flex-1 min-w-48 text-sm border border-stone-300 px-3 py-2 focus:outline-none focus:border-slate-900 bg-white"/>
+        <input value={trade} onChange={e=>setTrade(e.target.value)} placeholder="Trade" className="w-36 text-sm border border-stone-300 px-3 py-2 focus:outline-none focus:border-slate-900 bg-white"/>
+        <BidBtn onClick={()=>setShowAdd(true)}>+ Add Vendor</BidBtn>
+        <BidBtn onClick={()=>fileRef.current.click()}>⬆ Upload CSV</BidBtn>
+        <input ref={fileRef} type="file" accept=".csv,.txt" className="hidden" onChange={handleFile}/>
+        <BidBtn primary onClick={runAI} disabled={aiLoading||bids.length<2}>{aiLoading?'Analyzing…':'✦ AI Recommendation'}</BidBtn>
+      </div>
+
+      <div className="flex gap-3 flex-wrap">
+        <BidPill label="Vendors" value={bids.length}/>
+        <BidPill label="Lowest Bid" value={fmtUSD(minTotal)} color="green"/>
+        <BidPill label="Highest Bid" value={fmtUSD(Math.max(...totals))}/>
+        <BidPill label="Spread" value={fmtUSD(Math.max(...totals)-minTotal)} sub={pct(Math.max(...totals),minTotal)+' above low'} color="amber"/>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm border-collapse">
+          <thead>
+            <tr className="bg-stone-100">
+              <th className="text-left px-4 py-3 border border-stone-200 text-stone-500 font-medium text-[11px] tracking-wider uppercase min-w-44">Line Item</th>
+              {bids.map(b=>(
+                <th key={b.id} className="text-right px-4 py-3 border border-stone-200 min-w-36">
+                  <div className="flex justify-end items-center gap-2">
+                    <span className="font-semibold text-slate-900">{b.vendor}</span>
+                    <button onClick={()=>setBids(bids.filter(x=>x.id!==b.id))} className="text-stone-400 hover:text-rose-500 text-base leading-none">×</button>
+                  </div>
+                  <div className="text-[11px] text-stone-400 font-normal mt-0.5">{b.trade}</div>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {allDescs.map(desc=>(
+              <tr key={desc} className="border-b border-stone-100 hover:bg-stone-50">
+                <td className="px-4 py-3 border border-stone-200 font-medium text-slate-900">{desc}</td>
+                {bids.map(b=>{
+                  const item=b.items.find(i=>i.desc===desc);
+                  const amt=item?num(item.amount):null;
+                  const rowMin=Math.min(...bids.map(b2=>{const it=b2.items.find(i=>i.desc===desc);return it?num(it.amount):Infinity;}));
+                  const isLow=amt!=null&&amt===rowMin&&bids.length>1;
+                  return(
+                    <td key={b.id} className={`px-4 py-3 border border-stone-200 text-right ${isLow?'bg-emerald-50 text-emerald-700':item?'text-slate-800':'text-stone-300'}`}>
+                      {item?fmtUSD(amt):'—'}
+                      {item?.notes&&<div className="text-[10px] mt-0.5 opacity-70">{item.notes}</div>}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+            <tr className="bg-stone-100 font-semibold">
+              <td className="px-4 py-3 border border-stone-200">TOTAL</td>
+              {bids.map((b,i)=>{
+                const t=totals[i];const isLow=t===minTotal&&bids.length>1;
+                return(
+                  <td key={b.id} className={`px-4 py-3 border border-stone-200 text-right ${isLow?'bg-emerald-100 text-emerald-800':''}`}>
+                    {fmtUSD(t)}
+                    <div className="text-[11px] font-normal mt-0.5 opacity-70">{isLow?'Lowest bid':pct(t,minTotal)+' above low'}</div>
+                  </td>
+                );
+              })}
+            </tr>
+            <tr className="text-[12px] text-stone-500">
+              <td className="px-4 py-2.5 border border-stone-200">Inclusions</td>
+              {bids.map(b=><td key={b.id} className="px-4 py-2.5 border border-stone-200 text-right">{b.inclusions||'—'}</td>)}
+            </tr>
+            <tr className="text-[12px]">
+              <td className="px-4 py-2.5 border border-stone-200 text-stone-500">Exclusions</td>
+              {bids.map(b=><td key={b.id} className="px-4 py-2.5 border border-stone-200 text-right text-rose-600">{b.exclusions||'—'}</td>)}
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      {aiRec&&(
+        <div className="border border-stone-200 rounded p-5 bg-white">
+          <div className="flex items-center gap-3 mb-3">
+            <BidBadge color="blue">✦ AI Recommendation</BidBadge>
+            <span className="font-semibold text-slate-900">Award to: {aiRec.recommended}</span>
+          </div>
+          <p className="text-sm text-stone-600 leading-relaxed mb-3">{aiRec.reason}</p>
+          {aiRec.scopeGaps?.length>0&&<div className="mb-3"><div className="text-xs font-semibold mb-2 text-stone-700">Scope gaps to clarify</div>{aiRec.scopeGaps.map((g,i)=><div key={i} className="text-xs bg-amber-50 text-amber-700 px-3 py-1.5 rounded mb-1">⚠ {g}</div>)}</div>}
+          {aiRec.warnings?.length>0&&<div>{aiRec.warnings.map((w,i)=><div key={i} className="text-xs bg-rose-50 text-rose-700 px-3 py-1.5 rounded mb-1">! {w}</div>)}</div>}
+        </div>
+      )}
+
+      {showAdd&&(
+        <div className="border border-stone-300 rounded p-5 bg-stone-50 space-y-3">
+          <div className="font-semibold text-sm text-slate-900">New Vendor</div>
+          <input value={newVendor} onChange={e=>setNewVendor(e.target.value)} placeholder="Vendor name" className="w-full text-sm border border-stone-300 px-3 py-2 bg-white focus:outline-none focus:border-slate-900"/>
+          {newItems.map((item,i)=>(
+            <div key={i} className="flex gap-2 items-center">
+              <input value={item.desc} onChange={e=>{const n=[...newItems];n[i].desc=e.target.value;setNewItems(n);}} placeholder="Line item" className="flex-1 text-sm border border-stone-300 px-3 py-2 bg-white focus:outline-none"/>
+              <input value={item.amount} onChange={e=>{const n=[...newItems];n[i].amount=e.target.value;setNewItems(n);}} placeholder="$" className="w-28 text-sm border border-stone-300 px-3 py-2 bg-white focus:outline-none"/>
+              <input value={item.notes} onChange={e=>{const n=[...newItems];n[i].notes=e.target.value;setNewItems(n);}} placeholder="Notes" className="flex-1 text-sm border border-stone-300 px-3 py-2 bg-white focus:outline-none"/>
+              {newItems.length>1&&<button onClick={()=>setNewItems(newItems.filter((_,j)=>j!==i))} className="text-rose-500 text-lg">×</button>}
+            </div>
+          ))}
+          <button onClick={()=>setNewItems([...newItems,{desc:'',amount:'',notes:''}])} className="text-sm text-sky-600 hover:underline">+ Add line item</button>
+          <div className="flex gap-2">
+            <input value={newInc} onChange={e=>setNewInc(e.target.value)} placeholder="Inclusions" className="flex-1 text-sm border border-stone-300 px-3 py-2 bg-white focus:outline-none"/>
+            <input value={newExc} onChange={e=>setNewExc(e.target.value)} placeholder="Exclusions" className="flex-1 text-sm border border-stone-300 px-3 py-2 bg-white focus:outline-none"/>
+          </div>
+          <div className="flex gap-2"><BidBtn primary onClick={addBid}>Add Vendor</BidBtn><BidBtn onClick={()=>setShowAdd(false)}>Cancel</BidBtn></div>
+        </div>
+      )}
+      <div className="text-[11px] text-stone-400">CSV format: Vendor, Description, Amount, Notes, Inclusions, Exclusions</div>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────
+   BUDGET VS ACTUAL TAB
+───────────────────────────────────────────── */
+const DEMO_BUDGET=[
+  {id:1,trade:'Electrical',budget:184500,committed:181200,actual:168400,status:'In Progress'},
+  {id:2,trade:'HVAC',budget:96200,committed:96200,actual:96200,status:'Complete'},
+  {id:3,trade:'Plumbing',budget:52000,committed:48500,actual:31200,status:'In Progress'},
+  {id:4,trade:'Framing / Drywall',budget:78000,committed:82400,actual:72100,status:'In Progress'},
+  {id:5,trade:'Painting',budget:18500,committed:17800,actual:17800,status:'Complete'},
+  {id:6,trade:'ACT Ceiling',budget:24000,committed:0,actual:0,status:'Not Started'},
+  {id:7,trade:'Storefront / Glass',budget:38000,committed:41200,actual:0,status:'Awarded'},
+  {id:8,trade:'Demo',budget:12000,committed:11500,actual:11500,status:'Complete'},
+];
+
+function BudgetVsActualTab(){
+  const [rows,setRows]=useState(DEMO_BUDGET);
+  const [project,setProject]=useState('Dollar Tree #10852 — Laredo, TX');
+  const [editId,setEditId]=useState(null);
+  const [draft,setDraft]=useState({});
+
+  const totalBudget=rows.reduce((s,r)=>s+num(r.budget),0);
+  const totalCommitted=rows.reduce((s,r)=>s+num(r.committed),0);
+  const totalActual=rows.reduce((s,r)=>s+num(r.actual),0);
+  const variance=totalBudget-totalActual;
+
+  const startEdit=row=>{setEditId(row.id);setDraft({...row});};
+  const saveEdit=()=>{setRows(rows.map(r=>r.id===editId?{...draft,budget:num(draft.budget),committed:num(draft.committed),actual:num(draft.actual)}:r));setEditId(null);};
+  const addRow=()=>{const id=Date.now();setRows([...rows,{id,trade:'',budget:0,committed:0,actual:0,status:'Not Started'}]);setEditId(id);setDraft({id,trade:'',budget:0,committed:0,actual:0,status:'Not Started'});};
+
+  const statusColor=s=>({Complete:'green','In Progress':'blue',Awarded:'amber','Not Started':'gray','Over Budget':'red'})[s]||'gray';
+  const varPct=(b,a)=>{if(!b)return null;const p=((a-b)/b*100);return{val:p.toFixed(1),over:p>0};};
+
+  return(
+    <div className="space-y-5">
+      <div className="flex gap-2 items-center flex-wrap">
+        <input value={project} onChange={e=>setProject(e.target.value)} placeholder="Project name" className="flex-1 min-w-48 text-sm border border-stone-300 px-3 py-2 focus:outline-none focus:border-slate-900 bg-white"/>
+        <BidBtn primary onClick={addRow}>+ Add Trade</BidBtn>
+      </div>
+
+      <div className="flex gap-3 flex-wrap">
+        <BidPill label="Total Budget" value={fmtUSD(totalBudget)}/>
+        <BidPill label="Committed" value={fmtUSD(totalCommitted)} sub={pct(totalCommitted,totalBudget)+' of budget'} color={totalCommitted>totalBudget?'red':'blue'}/>
+        <BidPill label="Actual Cost" value={fmtUSD(totalActual)} sub={pct(totalActual,totalBudget)+' spent'} color="amber"/>
+        <BidPill label="Variance" value={fmtUSD(Math.abs(variance))} sub={variance>=0?'Under budget':'OVER BUDGET'} color={variance>=0?'green':'red'}/>
+      </div>
+
+      <div className="bg-stone-50 rounded p-4">
+        <div className="flex justify-between text-xs text-stone-500 mb-1.5">
+          <span>Budget consumed</span>
+          <span>{totalBudget?((totalActual/totalBudget)*100).toFixed(1):0}%</span>
+        </div>
+        <div className="h-2 rounded-full bg-stone-200 overflow-hidden">
+          <div className="h-full bg-sky-500 rounded-full transition-all" style={{width:`${Math.min((totalActual/totalBudget)*100,100)}%`}}/>
+        </div>
+        <div className="flex justify-between text-[11px] text-stone-400 mt-1.5">
+          <span>Committed: {totalBudget?((totalCommitted/totalBudget)*100).toFixed(0):0}%</span>
+          <span>{fmtUSD(totalBudget-totalActual)} remaining</span>
+        </div>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm border-collapse">
+          <thead>
+            <tr className="bg-stone-100">
+              {['Trade','Budget','Committed','Actual','Variance','Status',''].map(h=>(
+                <th key={h} className="text-left px-4 py-3 border border-stone-200 text-[11px] tracking-wider uppercase text-stone-500 font-medium whitespace-nowrap">{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(row=>{
+              const isEdit=editId===row.id;
+              const vp=varPct(num(row.budget),num(row.actual));
+              return(
+                <tr key={row.id} className="border-b border-stone-100 hover:bg-stone-50">
+                  <td className="px-4 py-3 border border-stone-200">
+                    {isEdit?<input value={draft.trade} onChange={e=>setDraft({...draft,trade:e.target.value})} className="w-full text-sm border border-stone-300 px-2 py-1 focus:outline-none"/>:<span className="font-medium">{row.trade}</span>}
+                  </td>
+                  {['budget','committed','actual'].map(f=>(
+                    <td key={f} className="px-4 py-3 border border-stone-200 text-right">
+                      {isEdit?<input value={draft[f]} onChange={e=>setDraft({...draft,[f]:e.target.value})} className="w-24 text-sm border border-stone-300 px-2 py-1 text-right focus:outline-none"/>:fmtUSD(row[f])}
+                    </td>
+                  ))}
+                  <td className={`px-4 py-3 border border-stone-200 text-right font-semibold ${vp?(vp.over?'text-rose-600':'text-emerald-600'):''}`}>
+                    {vp?`${vp.over?'+':''}${vp.val}%`:'—'}
+                  </td>
+                  <td className="px-4 py-3 border border-stone-200">
+                    {isEdit?(
+                      <select value={draft.status} onChange={e=>setDraft({...draft,status:e.target.value})} className="text-sm border border-stone-300 px-2 py-1 focus:outline-none w-full">
+                        {['Not Started','Awarded','In Progress','Complete','Over Budget'].map(s=><option key={s}>{s}</option>)}
+                      </select>
+                    ):<BidBadge color={statusColor(row.status)}>{row.status}</BidBadge>}
+                  </td>
+                  <td className="px-4 py-3 border border-stone-200">
+                    <div className="flex gap-1.5">
+                      {isEdit?<><BidBtn small primary onClick={saveEdit}>Save</BidBtn><BidBtn small onClick={()=>setEditId(null)}>Cancel</BidBtn></>:<><BidBtn small onClick={()=>startEdit(row)}>Edit</BidBtn><button onClick={()=>setRows(rows.filter(r=>r.id!==row.id))} className="px-2.5 py-1 text-xs border border-rose-200 text-rose-600 hover:bg-rose-50 rounded">Del</button></>}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────
+   QUICK ANALYSIS TAB
+───────────────────────────────────────────── */
+const HISTORY=[
+  {project:'DT #11454 — Austin',trade:'Electrical',sqft:9200,scope:'Full electrical TI — service, branch, lighting, LV',total:118400},
+  {project:'DT #10477 — McAllen',trade:'Electrical',sqft:8800,scope:'Full electrical TI — service, branch, lighting',total:104200},
+  {project:'Retail TI — North Park',trade:'Electrical',sqft:6400,scope:'Partial — branch circuits and lighting only',total:62800},
+  {project:'Retail TI — Cedar Park',trade:'HVAC',sqft:7200,scope:'5-ton split systems x2, ductwork, controls',total:88500},
+  {project:'DT #09921 — San Antonio',trade:'HVAC',sqft:9000,scope:'Full HVAC replacement + ductwork',total:96200},
+  {project:'DT #10852 — Laredo',trade:'Plumbing',sqft:9200,scope:'Rough & trim — 2 restrooms, mop sink',total:48000},
+];
+const TRADES=['Electrical','HVAC','Plumbing','Framing / Drywall','Painting','ACT Ceiling','Storefront','Demo','Multi-Trade'];
+
+function QuickAnalysisTab(){
+  const [trade,setTrade]=useState('Electrical');
+  const [sqft,setSqft]=useState('');
+  const [scope,setScope]=useState('');
+  const [loading,setLoading]=useState(false);
+  const [result,setResult]=useState(null);
+
+  const run=async()=>{
+    if(!sqft||!scope)return;setLoading(true);setResult(null);
+    const relevant=HISTORY.filter(h=>h.trade.toLowerCase()===trade.toLowerCase());
+    const prompt=`You are an expert commercial construction estimator for retail tenant improvements. Based on these historical project comps:\n${JSON.stringify(relevant)}\n\nProvide a quick price estimate for a new ${trade} scope:\n- Building: ${sqft} SF\n- Scope: ${scope}\n\nRespond ONLY as JSON (no markdown): {"lowEstimate":number,"midEstimate":number,"highEstimate":number,"perSqft":number,"confidence":"Low|Medium|High","rationale":"2-3 sentences","keyAssumptions":["a1","a2"],"riskFactors":["r1"]}`;
+    try{
+      const res=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1000,messages:[{role:'user',content:prompt}]})});
+      const data=await res.json();
+      const txt=data.content?.find(c=>c.type==='text')?.text||'{}';
+      setResult(JSON.parse(txt.replace(/```json|```/g,'').trim()));
+    }catch(_){setResult({error:true});}
+    setLoading(false);
+  };
+
+  const comps=HISTORY.filter(h=>h.trade.toLowerCase()===trade.toLowerCase());
+
+  return(
+    <div className="space-y-5">
+      <div className="border border-stone-200 rounded p-5 bg-white">
+        <div className="font-semibold text-sm mb-4 text-slate-900">Quick Price Analysis</div>
+        <div className="grid grid-cols-2 gap-3 mb-3">
+          <label className="block text-xs text-stone-500">Trade
+            <select value={trade} onChange={e=>setTrade(e.target.value)} className="mt-1 block w-full text-sm border border-stone-300 px-3 py-2 focus:outline-none focus:border-slate-900 bg-white">
+              {TRADES.map(t=><option key={t}>{t}</option>)}
+            </select>
+          </label>
+          <label className="block text-xs text-stone-500">Building Size (SF)
+            <input value={sqft} onChange={e=>setSqft(e.target.value)} placeholder="9200" type="number" className="mt-1 block w-full text-sm border border-stone-300 px-3 py-2 focus:outline-none focus:border-slate-900 bg-white"/>
+          </label>
+        </div>
+        <label className="block text-xs text-stone-500 mb-3">Scope Description
+          <textarea value={scope} onChange={e=>setScope(e.target.value)} rows={3} placeholder="Describe scope — e.g. service upgrade, branch circuits, lighting, low voltage..." className="mt-1 block w-full text-sm border border-stone-300 px-3 py-2 focus:outline-none focus:border-slate-900 bg-white resize-y font-sans"/>
+        </label>
+        <BidBtn primary onClick={run} disabled={loading||!sqft||!scope}>{loading?'Analyzing…':'✦ Estimate Price Range'}</BidBtn>
+      </div>
+
+      <div className="border border-stone-200 rounded p-5">
+        <div className="text-xs font-semibold text-stone-500 mb-3 uppercase tracking-wider">Historical Comps — {trade}</div>
+        {comps.length===0?<div className="text-sm text-stone-400">No comps for this trade yet.</div>:(
+          <table className="w-full text-xs border-collapse">
+            <thead><tr className="bg-stone-50">{['Project','SF','Scope','Total','$/SF'].map(h=><th key={h} className="text-left px-3 py-2.5 border border-stone-200 text-stone-500 font-medium">{h}</th>)}</tr></thead>
+            <tbody>
+              {comps.map((h,i)=>(
+                <tr key={i} className="border-b border-stone-100">
+                  <td className="px-3 py-2.5 border border-stone-200 font-medium">{h.project}</td>
+                  <td className="px-3 py-2.5 border border-stone-200">{h.sqft.toLocaleString()}</td>
+                  <td className="px-3 py-2.5 border border-stone-200 text-stone-500">{h.scope}</td>
+                  <td className="px-3 py-2.5 border border-stone-200 font-semibold">{fmtUSD(h.total)}</td>
+                  <td className="px-3 py-2.5 border border-stone-200 text-stone-500">${(h.total/h.sqft).toFixed(2)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {result&&!result.error&&(
+        <div className="border border-stone-200 rounded p-5 bg-white">
+          <div className="flex items-center gap-2 mb-4">
+            <BidBadge color="blue">✦ AI Estimate</BidBadge>
+            <BidBadge color={result.confidence==='High'?'green':result.confidence==='Medium'?'amber':'red'}>{result.confidence} confidence</BidBadge>
+          </div>
+          <div className="flex gap-3 flex-wrap mb-4">
+            <BidPill label="Low" value={fmtUSD(result.lowEstimate)} color="green"/>
+            <BidPill label="Mid (recommended)" value={fmtUSD(result.midEstimate)} color="blue"/>
+            <BidPill label="High" value={fmtUSD(result.highEstimate)} color="amber"/>
+            <BidPill label="$/SF (mid)" value={`$${result.perSqft?.toFixed(2)||'—'}`}/>
+          </div>
+          <p className="text-sm text-stone-600 leading-relaxed mb-3">{result.rationale}</p>
+          {result.keyAssumptions?.length>0&&<div className="mb-3"><div className="text-xs font-semibold mb-1.5">Key assumptions</div>{result.keyAssumptions.map((a,i)=><div key={i} className="text-xs bg-sky-50 text-sky-700 px-3 py-1.5 rounded mb-1">• {a}</div>)}</div>}
+          {result.riskFactors?.length>0&&<div><div className="text-xs font-semibold mb-1.5">Risk factors</div>{result.riskFactors.map((r,i)=><div key={i} className="text-xs bg-amber-50 text-amber-700 px-3 py-1.5 rounded mb-1">⚠ {r}</div>)}</div>}
+        </div>
+      )}
+      {result?.error&&<div className="text-sm text-rose-600">Could not generate estimate. Try again.</div>}
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────
+   KPI CARD
+───────────────────────────────────────────── */
+function KpiCard({label,value,sublabel,icon:Icon,accent,trend}){
+  return(
+    <div className="bg-white border border-stone-200 p-5 relative overflow-hidden group hover:border-slate-900 transition-colors">
+      <div className={`absolute top-0 left-0 h-1 w-full ${accent}`}></div>
+      <div className="flex items-start justify-between mb-3 mt-1">
+        <div className="text-[10px] tracking-[0.25em] text-stone-500 uppercase font-medium" style={{fontFamily:"'IBM Plex Mono',monospace"}}>{label}</div>
+        <Icon className="w-4 h-4 text-stone-400 group-hover:text-slate-900 transition-colors"/>
+      </div>
+      <div className="flex items-baseline gap-2">
+        <div className="text-3xl font-bold tracking-tight tabular-nums" style={{fontFamily:"'Fraunces',serif"}}>{value}</div>
+        {trend&&<ArrowUpRight className={`w-4 h-4 ${trend==='up'?'text-emerald-600':'text-rose-600 rotate-90'}`}/>}
+      </div>
+      <div className="text-xs text-stone-500 mt-1.5">{sublabel}</div>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────
+   NEW PROJECT MODAL
+───────────────────────────────────────────── */
+function NewProjectModal({onClose,onSave}){
+  const [form,setForm]=useState({id:'',name:'',trade:'Electrical',value:'',due:'',status:'Estimating',csi:'26 - Electrical'});
+  const set=(k,v)=>setForm({...form,[k]:v});
+  const submit=()=>{if(!form.name||!form.value||!form.due)return;onSave({...form,value:Number(form.value)});};
+  return(
+    <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <div className="bg-white w-full max-w-lg shadow-2xl">
+        <div className="px-6 py-4 border-b border-stone-200 flex items-center justify-between bg-slate-900 text-white">
+          <div>
+            <div className="text-[10px] tracking-[0.25em] uppercase text-amber-400" style={{fontFamily:"'IBM Plex Mono',monospace"}}>Pipeline · New Entry</div>
+            <h3 className="text-lg font-semibold tracking-tight" style={{fontFamily:"'Fraunces',serif"}}>Add Project</h3>
+          </div>
+          <button onClick={onClose} className="p-1 hover:bg-slate-800 transition-colors"><X className="w-5 h-5"/></button>
+        </div>
+        <div className="p-6 space-y-4">
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block"><div className="text-[10px] tracking-[0.2em] uppercase text-stone-500 font-semibold mb-1.5" style={{fontFamily:"'IBM Plex Mono',monospace"}}>Project ID</div><input value={form.id} onChange={e=>set('id',e.target.value)} placeholder="DT-12345" className="w-full px-3 py-2 text-sm border border-stone-300 focus:border-slate-900 focus:outline-none"/></label>
+            <label className="block"><div className="text-[10px] tracking-[0.2em] uppercase text-stone-500 font-semibold mb-1.5" style={{fontFamily:"'IBM Plex Mono',monospace"}}>Trade Scope</div><input value={form.trade} onChange={e=>set('trade',e.target.value)} className="w-full px-3 py-2 text-sm border border-stone-300 focus:border-slate-900 focus:outline-none"/></label>
+          </div>
+          <label className="block"><div className="text-[10px] tracking-[0.2em] uppercase text-stone-500 font-semibold mb-1.5" style={{fontFamily:"'IBM Plex Mono',monospace"}}>Project Name <span className="text-rose-600">*</span></div><input value={form.name} onChange={e=>set('name',e.target.value)} placeholder="Dollar Tree #XXXXX — City, ST" className="w-full px-3 py-2 text-sm border border-stone-300 focus:border-slate-900 focus:outline-none"/></label>
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block"><div className="text-[10px] tracking-[0.2em] uppercase text-stone-500 font-semibold mb-1.5" style={{fontFamily:"'IBM Plex Mono',monospace"}}>Est. Value ($) <span className="text-rose-600">*</span></div><input value={form.value} onChange={e=>set('value',e.target.value)} type="number" placeholder="125000" className="w-full px-3 py-2 text-sm border border-stone-300 focus:border-slate-900 focus:outline-none"/></label>
+            <label className="block"><div className="text-[10px] tracking-[0.2em] uppercase text-stone-500 font-semibold mb-1.5" style={{fontFamily:"'IBM Plex Mono',monospace"}}>Due Date <span className="text-rose-600">*</span></div><input value={form.due} onChange={e=>set('due',e.target.value)} type="date" className="w-full px-3 py-2 text-sm border border-stone-300 focus:border-slate-900 focus:outline-none"/></label>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block"><div className="text-[10px] tracking-[0.2em] uppercase text-stone-500 font-semibold mb-1.5" style={{fontFamily:"'IBM Plex Mono',monospace"}}>Status</div>
+              <select value={form.status} onChange={e=>set('status',e.target.value)} className="w-full px-3 py-2 text-sm border border-stone-300 focus:border-slate-900 focus:outline-none bg-white">
+                {['Estimating','Submitted','Won','Lost'].map(s=><option key={s}>{s}</option>)}
+              </select>
+            </label>
+            <label className="block"><div className="text-[10px] tracking-[0.2em] uppercase text-stone-500 font-semibold mb-1.5" style={{fontFamily:"'IBM Plex Mono',monospace"}}>CSI Division</div><input value={form.csi} onChange={e=>set('csi',e.target.value)} placeholder="26 - Electrical" className="w-full px-3 py-2 text-sm border border-stone-300 focus:border-slate-900 focus:outline-none"/></label>
+          </div>
+        </div>
+        <div className="px-6 py-4 border-t border-stone-200 bg-stone-50 flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-stone-700 hover:bg-stone-200 transition-colors">Cancel</button>
+          <button onClick={submit} className="px-4 py-2 text-sm font-semibold bg-slate-900 text-white hover:bg-slate-800 transition-colors">Add to Pipeline</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────
+   PIPELINE SECTION (original dashboard)
+───────────────────────────────────────────── */
+function Th({children,className=''}){return <th className={`px-4 py-3 text-left text-[10px] font-semibold tracking-[0.15em] uppercase text-stone-500 ${className}`} style={{fontFamily:"'IBM Plex Mono',monospace"}}>{children}</th>;}
+function Td({children,className=''}){return <td className={`px-4 py-3.5 text-slate-800 ${className}`}>{children}</td>;}
+
+function PipelineSection({projects,setProjects,showModal,setShowModal}){
+  const [search,setSearch]=useState('');
+  const [statusFilter,setStatusFilter]=useState('All');
+
+  const kpis=useMemo(()=>{
+    const total=projects.reduce((s,p)=>s+p.value,0);
+    const won=projects.filter(p=>p.status==='Won');
+    const lost=projects.filter(p=>p.status==='Lost');
+    const pending=projects.filter(p=>p.status==='Submitted'||p.status==='Estimating');
+    const decided=won.length+lost.length;
+    return{total,winRate:decided?(won.length/decided)*100:0,wonCount:won.length,lostCount:lost.length,pendingCount:pending.length,pendingValue:pending.reduce((s,p)=>s+p.value,0)};
+  },[projects]);
+
+  const volumeData=useMemo(()=>{
+    const map={};
+    projects.forEach(p=>{if(!map[p.trade])map[p.trade]={trade:p.trade,bids:0,wins:0};map[p.trade].bids+=1;if(p.status==='Won')map[p.trade].wins+=1;});
+    return Object.values(map).sort((a,b)=>b.bids-a.bids);
+  },[projects]);
+
+  const csiData=useMemo(()=>{
+    const map={};projects.forEach(p=>{map[p.csi]=(map[p.csi]||0)+p.value;});
+    return Object.entries(map).map(([name,value])=>({name,value})).sort((a,b)=>b.value-a.value);
+  },[projects]);
+
+  const filtered=useMemo(()=>projects.filter(p=>{
+    const m=p.name.toLowerCase().includes(search.toLowerCase())||p.id.toLowerCase().includes(search.toLowerCase())||p.trade.toLowerCase().includes(search.toLowerCase());
+    return m&&(statusFilter==='All'||p.status===statusFilter);
+  }),[projects,search,statusFilter]);
+
+  return(
+    <div className="space-y-6">
+      <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <KpiCard label="Total Bid Value" value={fmtCurrency(kpis.total)} sublabel={`${projects.length} projects tracked`} icon={DollarSign} accent="bg-slate-900"/>
+        <KpiCard label="Win / Loss Ratio" value={`${kpis.winRate.toFixed(1)}%`} sublabel={`${kpis.wonCount} won · ${kpis.lostCount} lost`} icon={Trophy} accent="bg-emerald-600" trend={kpis.winRate>=50?'up':'down'}/>
+        <KpiCard label="Pending Proposals" value={kpis.pendingCount} sublabel={fmtCurrency(kpis.pendingValue)+' in flight'} icon={Target} accent="bg-amber-500"/>
+        <KpiCard label="Avg Turnaround" value={`${AVG_TURNAROUND_DAYS}d`} sublabel="Plans-in to bid-out" icon={Clock} accent="bg-sky-600"/>
+      </section>
+
+      <section className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+        <div className="lg:col-span-3 bg-white border border-stone-200 p-6">
+          <div className="flex items-start justify-between mb-5">
+            <div>
+              <div className="text-[10px] tracking-[0.25em] text-stone-500 uppercase mb-1" style={{fontFamily:"'IBM Plex Mono',monospace"}}>Performance · By Trade</div>
+              <h2 className="text-lg font-semibold tracking-tight">Bid Volume vs. Wins</h2>
+            </div>
+            <div className="flex items-center gap-3 text-xs">
+              <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 bg-slate-800 inline-block"></span>Bids</span>
+              <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 bg-amber-400 inline-block"></span>Wins</span>
+            </div>
+          </div>
+          <ResponsiveContainer width="100%" height={280}>
+            <BarChart data={volumeData} margin={{top:5,right:10,left:-20,bottom:5}}>
+              <CartesianGrid strokeDasharray="2 2" stroke="#e7e5e4" vertical={false}/>
+              <XAxis dataKey="trade" tick={{fontSize:11,fill:'#57534e'}} angle={-15} textAnchor="end" height={60}/>
+              <YAxis tick={{fontSize:11,fill:'#57534e'}} allowDecimals={false}/>
+              <Tooltip contentStyle={{backgroundColor:'#0f172a',border:'none',borderRadius:0,color:'white',fontSize:12}} cursor={{fill:'#f5f5f4'}}/>
+              <Bar dataKey="bids" fill="#1e293b"/><Bar dataKey="wins" fill="#fbbf24"/>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+        <div className="lg:col-span-2 bg-white border border-stone-200 p-6">
+          <div className="mb-5">
+            <div className="text-[10px] tracking-[0.25em] text-stone-500 uppercase mb-1" style={{fontFamily:"'IBM Plex Mono',monospace"}}>Distribution · CSI Division</div>
+            <h2 className="text-lg font-semibold tracking-tight">Work Mix</h2>
+          </div>
+          <ResponsiveContainer width="100%" height={280}>
+            <PieChart>
+              <Pie data={csiData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={50} outerRadius={95} paddingAngle={1}>
+                {csiData.map((_,i)=><Cell key={i} fill={PIE_COLORS[i%PIE_COLORS.length]}/>)}
+              </Pie>
+              <Tooltip formatter={v=>fmtCurrency(v)} contentStyle={{backgroundColor:'#0f172a',border:'none',borderRadius:0,color:'white',fontSize:12}}/>
+              <Legend verticalAlign="bottom" iconSize={8} wrapperStyle={{fontSize:10,lineHeight:'14px'}}/>
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+      </section>
+
+      <section className="bg-white border border-stone-200">
+        <div className="px-6 py-4 border-b border-stone-200 flex items-center justify-between flex-wrap gap-3">
+          <div>
+            <div className="text-[10px] tracking-[0.25em] text-stone-500 uppercase mb-1" style={{fontFamily:"'IBM Plex Mono',monospace"}}>Active Pipeline · {filtered.length} of {projects.length}</div>
+            <h2 className="text-lg font-semibold tracking-tight">Project Register</h2>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="relative">
+              <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-stone-400"/>
+              <input type="text" placeholder="Search projects, IDs, trades..." value={search} onChange={e=>setSearch(e.target.value)} className="pl-9 pr-3 py-2 text-sm border border-stone-300 focus:border-slate-900 focus:outline-none w-64 bg-stone-50"/>
+            </div>
+            <div className="flex items-center gap-1 border border-stone-300 bg-stone-50 px-1 py-1">
+              <Filter className="w-3.5 h-3.5 text-stone-400 ml-1.5"/>
+              {['All','Estimating','Submitted','Won','Lost'].map(s=>(
+                <button key={s} onClick={()=>setStatusFilter(s)} className={`px-2.5 py-1 text-xs font-medium transition-colors ${statusFilter===s?'bg-slate-900 text-white':'text-stone-600 hover:text-slate-900'}`}>{s}</button>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-stone-200 bg-stone-50/50">
+                <Th>Project ID</Th><Th>Project Name</Th><Th>Trade Scope</Th><Th className="text-right">Est. Value</Th><Th>Due Date</Th><Th>Status</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map(p=>{
+                const days=daysUntil(p.due);
+                const isUrgent=days<=7&&days>=0&&(p.status==='Estimating'||p.status==='Submitted');
+                const styles=STATUS_STYLES[p.status];
+                return(
+                  <tr key={p.id} className="border-b border-stone-100 hover:bg-amber-50/30 transition-colors">
+                    <Td><span className="font-semibold text-slate-900" style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:12}}>{p.id}</span></Td>
+                    <Td><div className="flex items-center gap-2"><Building2 className="w-3.5 h-3.5 text-stone-400 flex-shrink-0"/><span className="font-medium">{p.name}</span></div></Td>
+                    <Td><span className="inline-block px-2 py-0.5 bg-stone-100 text-stone-700 text-xs font-medium">{p.trade}</span></Td>
+                    <Td className="text-right font-semibold" style={{fontFamily:"'IBM Plex Mono',monospace"}}>{fmtCurrency(p.value)}</Td>
+                    <Td>
+                      <div className="flex items-center gap-2">
+                        <Calendar className="w-3.5 h-3.5 text-stone-400"/>
+                        <span>{fmtDate(p.due)}</span>
+                        {isUrgent&&<span className="text-[10px] font-bold text-amber-700 bg-amber-100 px-1.5 py-0.5">{days}d</span>}
+                      </div>
+                    </Td>
+                    <Td><span className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium ${styles.bg} ${styles.text} ring-1 ring-inset ${styles.ring}`}><span className={`w-1.5 h-1.5 rounded-full ${styles.dot}`}></span>{p.status}</span></Td>
+                  </tr>
+                );
+              })}
+              {filtered.length===0&&<tr><td colSpan="6" className="text-center py-12 text-stone-400 text-sm">No projects match the current filters.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────
+   ROOT
+───────────────────────────────────────────── */
+const MAIN_SECTIONS=[
+  {id:'pipeline', label:'Pipeline',      icon:BarChart2},
+  {id:'bids',     label:'Bid Comparison',icon:GitCompare},
+  {id:'budget',   label:'Budget vs Actual',icon:TrendingUp},
+  {id:'analysis', label:'Quick Analysis',icon:Zap},
+];
+
+export default function EstimatorDashboard(){
+  const [projects,setProjects]=useState(INITIAL_PROJECTS);
+  const [showModal,setShowModal]=useState(false);
+  const [section,setSection]=useState('pipeline');
+
+  const kpis=useMemo(()=>{
+    const pending=projects.filter(p=>p.status==='Submitted'||p.status==='Estimating');
+    return{pendingCount:pending.length,pendingValue:pending.reduce((s,p)=>s+p.value,0)};
+  },[projects]);
+
+  const addProject=p=>{setProjects([{...p,id:p.id||`NEW-${Date.now().toString().slice(-5)}`},...projects]);setShowModal(false);};
+
+  return(
+    <div className="min-h-screen bg-stone-50 text-slate-900" style={{fontFamily:"'IBM Plex Sans',ui-sans-serif,system-ui"}}>
+      <link rel="preconnect" href="https://fonts.googleapis.com"/>
+      <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous"/>
+      <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=Fraunces:wght@600;700;900&display=swap" rel="stylesheet"/>
+
+      <div className="flex">
+        {/* SIDEBAR */}
+        <aside className="w-60 min-h-screen bg-slate-900 text-slate-100 flex flex-col border-r border-slate-800">
+          <div className="px-5 py-5 border-b border-slate-800">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 bg-amber-400 flex items-center justify-center" style={{clipPath:'polygon(0 0, 100% 0, 100% 70%, 70% 100%, 0 100%)'}}>
+                <Hammer className="w-4 h-4 text-slate-900"/>
+              </div>
+              <div>
+                <div className="text-[10px] tracking-[0.2em] text-slate-400 uppercase" style={{fontFamily:"'IBM Plex Mono',monospace"}}>Estimator</div>
+                <div className="text-sm font-bold tracking-tight">Pipeline OS</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Nav */}
+          <div className="px-3 py-4 border-b border-slate-800">
+            <div className="text-[10px] tracking-[0.2em] text-slate-500 uppercase mb-2 px-2" style={{fontFamily:"'IBM Plex Mono',monospace"}}>Modules</div>
+            {MAIN_SECTIONS.map(s=>(
+              <button key={s.id} onClick={()=>setSection(s.id)} className={`w-full flex items-center gap-2.5 px-2.5 py-2 text-sm rounded mb-0.5 transition-colors ${section===s.id?'bg-slate-700 text-white':'text-slate-300 hover:bg-slate-800 hover:text-amber-400'}`}>
+                <s.icon className="w-4 h-4 flex-shrink-0"/>
+                <span className="text-[13px]">{s.label}</span>
+                {section===s.id&&<ChevronRight className="w-3 h-3 ml-auto"/>}
+              </button>
+            ))}
+          </div>
+
+          <div className="px-5 py-4 border-b border-slate-800">
+            <div className="text-[10px] tracking-[0.2em] text-slate-500 uppercase mb-3" style={{fontFamily:"'IBM Plex Mono',monospace"}}>Quick Actions</div>
+            <div className="space-y-1">
+              {[
+                {icon:ClipboardCheck,label:'Generate QA/QC Report'},
+                {icon:Layers,label:'Export CSI Sub-trade List'},
+                {icon:FileBarChart,label:'Run Bid Comparison'},
+                {icon:FileText,label:'Scope Gap Analysis'},
+                {icon:Download,label:'Export Pipeline (CSV)'},
+              ].map((a,i)=>(
+                <button key={i} className="w-full flex items-center gap-2.5 px-2.5 py-2 text-sm text-slate-300 hover:bg-slate-800 hover:text-amber-400 rounded transition-colors group">
+                  <a.icon className="w-4 h-4 flex-shrink-0"/>
+                  <span className="text-left text-[13px] leading-tight">{a.label}</span>
+                  <ChevronRight className="w-3 h-3 ml-auto opacity-0 group-hover:opacity-100 transition-opacity"/>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="px-5 py-4">
+            <div className="text-[10px] tracking-[0.2em] text-slate-500 uppercase mb-3" style={{fontFamily:"'IBM Plex Mono',monospace"}}>This Week</div>
+            <div className="space-y-2.5 text-sm">
+              <div className="flex justify-between text-slate-300">
+                <span>Due ≤ 7 days</span>
+                <span className="font-semibold text-amber-400" style={{fontFamily:"'IBM Plex Mono',monospace"}}>{projects.filter(p=>daysUntil(p.due)<=7&&daysUntil(p.due)>=0&&(p.status==='Estimating'||p.status==='Submitted')).length}</span>
+              </div>
+              <div className="flex justify-between text-slate-300">
+                <span>Active bids</span>
+                <span className="font-semibold" style={{fontFamily:"'IBM Plex Mono',monospace"}}>{kpis.pendingCount}</span>
+              </div>
+              <div className="flex justify-between text-slate-300">
+                <span>Pipeline value</span>
+                <span className="font-semibold" style={{fontFamily:"'IBM Plex Mono',monospace"}}>{fmtCompact(kpis.pendingValue)}</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-auto px-5 py-4 border-t border-slate-800">
+            <div className="text-[10px] text-slate-500" style={{fontFamily:"'IBM Plex Mono',monospace"}}>v2.0 · {new Date().toLocaleDateString()}</div>
+          </div>
+        </aside>
+
+        {/* MAIN */}
+        <main className="flex-1 min-w-0">
+          <header className="bg-white border-b border-stone-200 px-8 py-5 flex items-center justify-between">
+            <div>
+              <div className="text-[10px] tracking-[0.25em] text-stone-500 uppercase mb-1" style={{fontFamily:"'IBM Plex Mono',monospace"}}>
+                Pre-Construction · {MAIN_SECTIONS.find(s=>s.id===section)?.label}
+              </div>
+              <h1 className="text-3xl tracking-tight" style={{fontFamily:"'Fraunces',serif",fontWeight:700}}>Estimator Dashboard</h1>
+            </div>
+            {section==='pipeline'&&(
+              <button onClick={()=>setShowModal(true)} className="flex items-center gap-2 bg-slate-900 text-white px-4 py-2.5 text-sm font-medium hover:bg-slate-800 transition-colors">
+                <Plus className="w-4 h-4"/>New Project
+              </button>
+            )}
+          </header>
+
+          <div className="p-8">
+            {section==='pipeline'&&<PipelineSection projects={projects} setProjects={setProjects} showModal={showModal} setShowModal={setShowModal}/>}
+            {section==='bids'&&<BidComparisonTab/>}
+            {section==='budget'&&<BudgetVsActualTab/>}
+            {section==='analysis'&&<QuickAnalysisTab/>}
+          </div>
+        </main>
+      </div>
+
+      {showModal&&<NewProjectModal onClose={()=>setShowModal(false)} onSave={addProject}/>}
+    </div>
+  );
+}
